@@ -422,6 +422,17 @@ kbd {
   box-sizing: border-box;
 }
 
+.persistence-notice {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid #e8c9a0;
+  border-radius: 5px;
+  color: #885a2e;
+  background: #fff8ee;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .page-heading,
 .heading-actions,
 .panel-heading,
@@ -1617,6 +1628,8 @@ td > strong {
 }
 
 .auth-screen {
+  --green: #206657;
+  --green-dark: #154b40;
   min-height: 100vh;
   display: grid;
   grid-template-columns: minmax(330px, 0.85fr) minmax(0, 1.15fr);

@@ -44,124 +44,52 @@ const navigation = [
   { id: 'journeys', label: 'Synthetic journeys', icon: WandSparkles },
 ]
 
-const ADMIN_USERS_KEY = 'fieldnotes-admin-users'
-const ADMIN_SESSION_KEY = 'fieldnotes-admin-session'
-const INVENTORY_STORAGE_KEY = 'fieldnotes-store-inventory'
-
-function readAdminSession() {
-  try {
-    const session = JSON.parse(sessionStorage.getItem(ADMIN_SESSION_KEY) || 'null')
-    return typeof session?.name === 'string' ? session.name : ''
-  } catch {
-    return ''
-  }
-}
-
-function readAdminUsers() {
-  try {
-    const users = JSON.parse(localStorage.getItem(ADMIN_USERS_KEY) || '[]')
-    return Array.isArray(users) ? users : []
-  } catch {
-    return []
-  }
-}
-
-function readInventory() {
-  try {
-    const storedInventory = JSON.parse(localStorage.getItem(INVENTORY_STORAGE_KEY) || '[]')
-    return Array.isArray(storedInventory) ? storedInventory : []
-  } catch {
-    return []
-  }
-}
-
-async function hashPassword(password, salt) {
-  const data = new TextEncoder().encode(`${salt}:${password}`)
-  const digest = await crypto.subtle.digest('SHA-256', data)
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
+const INVENTORY_STORAGE_KEY = 'kinetix-store-inventory'
 
 function AdminAuth({ onAuthenticated }) {
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [message, setMessage] = useState('')
   const [working, setWorking] = useState(false)
+  const [registrationOpen, setRegistrationOpen] = useState(null)
   const [today, setToday] = useState(() => new Date())
 
   useEffect(() => {
     const timer = window.setInterval(() => setToday(new Date()), 60_000)
+    fetch('/api/auth/status')
+      .then(async (response) => {
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error)
+        setRegistrationOpen(result.registrationOpen)
+      })
+      .catch(() => {
+        setRegistrationOpen(false)
+        setMessage('The local data service is unavailable. Restart the dashboard server and try again.')
+      })
     return () => window.clearInterval(timer)
   }, [])
 
-  const authenticate = (adminName) => {
-    try {
-      sessionStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ name: adminName }))
-    } catch {
-      // Keep the current browser session usable if storage is unavailable.
-    }
-    onAuthenticated(adminName)
-  }
-
-  const register = async () => {
-    const adminName = name.trim()
-    if (!adminName || !password) {
-      setMessage('Enter your admin name and a password to register.')
+  const authenticate = async (endpoint) => {
+    if (!name.trim() || !password) {
+      setMessage('Enter your admin name and password.')
       return
     }
-    if (password.length < 8) {
-      setMessage('Choose a password with at least 8 characters.')
-      return
-    }
-    if (!globalThis.crypto?.subtle) {
-      setMessage('Secure password storage is unavailable in this browser.')
-      return
-    }
-
     setWorking(true)
     try {
-      const users = readAdminUsers()
-      const key = adminName.toLocaleLowerCase()
-      if (users.some((user) => user.key === key)) {
-        setMessage('An account with that name already exists. Choose Login instead.')
-        return
-      }
-      const salt = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('')
-      const passwordHash = await hashPassword(password, salt)
-      localStorage.setItem(ADMIN_USERS_KEY, JSON.stringify([...users, { key, name: adminName, salt, passwordHash }]))
-      authenticate(adminName)
-    } catch {
-      setMessage('The account could not be saved in this browser.')
+      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim(), password }) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Authentication failed.')
+      onAuthenticated(result.admin.name)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Authentication could not be completed.')
     } finally {
       setWorking(false)
     }
   }
 
-  const login = async (event) => {
+  const login = (event) => {
     event.preventDefault()
-    const adminName = name.trim()
-    if (!adminName || !password) {
-      setMessage('Enter your admin name and password to log in.')
-      return
-    }
-    if (!globalThis.crypto?.subtle) {
-      setMessage('Secure password verification is unavailable in this browser.')
-      return
-    }
-
-    setWorking(true)
-    try {
-      const key = adminName.toLocaleLowerCase()
-      const user = readAdminUsers().find((candidate) => candidate.key === key)
-      if (!user || await hashPassword(password, user.salt) !== user.passwordHash) {
-        setMessage('Name or password not recognized. Register first if you are a new admin.')
-        return
-      }
-      authenticate(user.name)
-    } catch {
-      setMessage('Login could not be completed in this browser.')
-    } finally {
-      setWorking(false)
-    }
+    void authenticate('/api/auth/login')
   }
 
   return (
@@ -169,25 +97,25 @@ function AdminAuth({ onAuthenticated }) {
       <aside className="auth-aside">
         <a className="brand" href="#admin-access">
           <span className="brand-mark"><Command size={17} strokeWidth={2.4} /></span>
-          <span>fieldnotes<span className="brand-period">.</span><small>RETAIL INTELLIGENCE</small></span>
+          <span>Kinetix<span className="brand-period">.</span><small>RETAIL INTELLIGENCE</small></span>
         </a>
         <div className="auth-aside-copy"><span className="auth-aside-kicker">SMART RETAIL ANALYTICS</span><h2>Store operations,<br />in clear view.</h2><p>Inventory, demand, and store signals in one place.</p></div>
         <div className="auth-decoration" aria-hidden="true"><i /><i /><i /><i /><i /><i /><span /></div>
-        <span className="auth-aside-footer">FIELDNOTES INTELLIGENCE</span>
+        <span className="auth-aside-footer">KINETIX INTELLIGENCE</span>
       </aside>
       <section className="auth-main">
         <div className="auth-card">
           <span className="auth-eyebrow">ADMINISTRATOR</span>
           <h1>Admin access</h1>
-          <p>Register a new admin or log in to your account.</p>
+          <p>{registrationOpen ? 'Complete the one-time admin registration to get started.' : 'Log in with the registered admin account.'}</p>
           <form onSubmit={login}>
             <label className="auth-field"><span>Admin name</span><input autoComplete="username" value={name} onChange={(event) => { setName(event.target.value); setMessage('') }} placeholder="Enter your name" /></label>
             <label className="auth-field"><span>Password</span><input autoComplete="current-password" type="password" value={password} onChange={(event) => { setPassword(event.target.value); setMessage('') }} placeholder="Enter your password" /></label>
-            <div className="auth-hint">New admin? Register with a password of at least 8 characters.</div>
-            <div className="auth-actions"><button className="button-secondary" type="button" disabled={working} onClick={register}>Register</button><button className="button-primary" type="submit" disabled={working}>{working ? 'Please wait...' : 'Login'}</button></div>
+            <div className="auth-hint">{registrationOpen === null ? 'Checking admin setup...' : registrationOpen ? 'Register once using the configured Abin admin credentials.' : 'The one-time registration is complete.'}</div>
+            <div className="auth-actions">{registrationOpen && <button className="button-secondary" type="button" disabled={working} onClick={() => void authenticate('/api/auth/register')}>Register</button>}<button className="button-primary" type="button" onClick={login} disabled={working || registrationOpen === null}>{working ? 'Please wait...' : 'Login'}</button></div>
             <div className="auth-message" role="status" aria-live="polite">{message}</div>
           </form>
-          <div className="auth-local-note"><CircleHelp size={14} /><span>Accounts are stored in this browser for this prototype.</span></div>
+          <div className="auth-local-note"><CircleHelp size={14} /><span>Admin credentials and store data are stored by the local server.</span></div>
         </div>
         <div className="auth-date">{today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</div>
       </section>
@@ -308,10 +236,13 @@ function DemandChart({ detailed = false, data }) {
 }
 
 function App() {
-  const [adminName, setAdminName] = useState(readAdminSession)
+  const [adminName, setAdminName] = useState('')
+  const [authChecking, setAuthChecking] = useState(true)
   const [activeView, setActiveView] = useState('overview')
   const [journeyRuns, setJourneyRuns] = useState([])
-  const [stockItems, setStockItems] = useState(readInventory)
+  const [stockItems, setStockItems] = useState([])
+  const [dataLoaded, setDataLoaded] = useState(false)
+  const [dataError, setDataError] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -323,8 +254,9 @@ function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [now, setNow] = useState(() => new Date())
   const searchInputRef = useRef(null)
+  const saveQueueRef = useRef(Promise.resolve())
   const currentView = viewDetails[activeView]
-  const pageTitle = activeView === 'overview' ? `Good morning ${adminName}` : currentView.title
+  const pageTitle = activeView === 'overview' ? `Good morning, ${adminName}` : currentView.title
   const latestJourney = journeyRuns[journeyRuns.length - 1]
   const netSales = journeyRuns.reduce((total, journey) => total + journey.sales, 0)
   const unitsSold = journeyRuns.reduce((total, journey) => total + journey.units, 0)
@@ -358,6 +290,65 @@ function App() {
   }, [])
 
   useEffect(() => {
+    let active = true
+    fetch('/api/auth/session')
+      .then(async (response) => {
+        if (!response.ok) return null
+        return response.json()
+      })
+      .then((result) => {
+        if (active && result?.admin?.name) setAdminName(result.admin.name)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setAuthChecking(false)
+      })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    if (!adminName) return undefined
+    let active = true
+
+    const loadData = async () => {
+      try {
+        const response = await fetch('/api/data')
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || 'Could not load saved store data.')
+        if (!result.initialized) {
+          let legacyInventory = []
+          try {
+            const storedInventory = JSON.parse(localStorage.getItem(INVENTORY_STORAGE_KEY) || '[]')
+            if (Array.isArray(storedInventory)) legacyInventory = storedInventory
+          } catch {
+            legacyInventory = []
+          }
+          const migration = await fetch('/api/data', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ inventory: legacyInventory, journeys: [] }),
+          })
+          if (!migration.ok) throw new Error('Could not migrate the existing inventory.')
+          result.inventory = legacyInventory
+          result.journeys = []
+          localStorage.removeItem(INVENTORY_STORAGE_KEY)
+        }
+        if (active) {
+          setStockItems(result.inventory)
+          setJourneyRuns(result.journeys)
+          setDataError('')
+          setDataLoaded(true)
+        }
+      } catch (error) {
+        if (active) setDataError(error instanceof Error ? error.message : 'Could not load saved store data.')
+      }
+    }
+
+    void loadData()
+    return () => { active = false }
+  }, [adminName])
+
+  useEffect(() => {
     const handleShortcut = (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'k') {
         event.preventDefault()
@@ -369,12 +360,21 @@ function App() {
   }, [])
 
   useEffect(() => {
-    try {
-      localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify(stockItems))
-    } catch (error) {
-      console.error('Inventory could not be saved in this browser.', error)
+    if (!adminName || !dataLoaded) return
+    const snapshot = JSON.stringify({ inventory: stockItems, journeys: journeyRuns })
+    const saveSnapshot = async () => {
+      const response = await fetch('/api/data', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: snapshot,
+      })
+      if (!response.ok) throw new Error('Could not save your store data.')
+      setDataError('')
     }
-  }, [stockItems])
+    saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(saveSnapshot).catch(() => {
+      setDataError('Changes could not be saved. Check that the local server is running.')
+    })
+  }, [adminName, dataLoaded, stockItems, journeyRuns])
 
   const selectView = (id) => {
     setActiveView(id)
@@ -492,14 +492,28 @@ function App() {
     selectView('inventory')
   }
 
-  const signOut = () => {
-    sessionStorage.removeItem(ADMIN_SESSION_KEY)
+  const signOut = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
     setAdminName('')
+    setDataLoaded(false)
     setActiveView('overview')
   }
 
+  const authenticateAdmin = (name) => {
+    setDataLoaded(false)
+    setAdminName(name)
+  }
+
+  if (authChecking) {
+    return <main className="auth-screen"><section className="auth-main"><div className="auth-card"><span className="auth-eyebrow">KINETIX</span><h1>Checking admin session</h1></div></section></main>
+  }
+
   if (!adminName) {
-    return <AdminAuth onAuthenticated={setAdminName} />
+    return <AdminAuth onAuthenticated={authenticateAdmin} />
+  }
+
+  if (!dataLoaded) {
+    return <main className="auth-screen"><section className="auth-main"><div className="auth-card"><span className="auth-eyebrow">KINETIX</span><h1>{dataError || 'Loading saved store data...'}</h1></div></section></main>
   }
 
   return (
@@ -507,7 +521,7 @@ function App() {
       <aside className={`sidebar ${mobileNavOpen ? 'sidebar-open' : ''}`}>
         <a className="brand" href="#overview" onClick={() => selectView('overview')}>
           <span className="brand-mark"><Command size={17} strokeWidth={2.4} /></span>
-          <span>fieldnotes<span className="brand-period">.</span><small>RETAIL INTELLIGENCE</small></span>
+          <span>kinetix<span className="brand-period">.</span><small>RETAIL INTELLIGENCE</small></span>
         </a>
         <div className="store-select store-select-empty" aria-hidden="true" />
         <div className="nav-label">WORKSPACE</div>
@@ -546,6 +560,7 @@ function App() {
         </header>
 
         <div className="content-area">
+          {dataError && <div className="persistence-notice" role="alert">{dataError}</div>}
           <div className="page-heading">
             <div>
               <div className="eyebrow"><span className="eyebrow-line" />{now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()}</div>
@@ -678,10 +693,10 @@ function App() {
             </section>
           )}
 
-          <footer className="page-footer"><span>Fieldnotes Intelligence <i>·</i> Prototype</span><span>Model outputs use demo data until connected to real store systems.</span><button className="icon-button subtle" aria-label="More information" onClick={() => setUtilityPanel('help')}><CircleHelp size={16} /></button></footer>
+          <footer className="page-footer"><span>Kinetix Intelligence <i>·</i> Prototype</span><span>Model outputs use demo data until connected to real store systems.</span><button className="icon-button subtle" aria-label="More information" onClick={() => setUtilityPanel('help')}><CircleHelp size={16} /></button></footer>
         </div>
       </main>
-      {utilityPanel && <div className="utility-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setUtilityPanel('') }}><section className="utility-dialog" role="dialog" aria-modal="true" aria-labelledby="utility-title"><div className="utility-dialog-heading"><div><span className="panel-kicker">FIELDNOTES</span><h2 id="utility-title">{utilityPanel === 'settings' ? 'Settings' : 'Help center'}</h2></div><button className="icon-button" aria-label="Close dialog" onClick={() => setUtilityPanel('')}>×</button></div>{utilityPanel === 'settings' ? <div className="utility-copy"><p>Inventory products and stock levels are saved in this browser.</p><p>Simulated sales totals reset when the page reloads. This prototype is not connected to a live database or AI model service.</p></div> : <div className="utility-copy"><p>Add your store items from <strong>Inventory</strong>, including category, opening stock, reorder point, and price.</p><p>Use <strong>Search</strong> to find a product, review low-stock items from the notification bell, and use <strong>Replenish</strong> to restore stock to its reorder target.</p><p>Generate synthetic journeys to see simulated shopping paths and sales from products in your catalog.</p></div>}<div className="utility-dialog-actions"><button className="button-primary" onClick={() => setUtilityPanel('')}>Close</button></div></section></div>}
+      {utilityPanel && <div className="utility-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setUtilityPanel('') }}><section className="utility-dialog" role="dialog" aria-modal="true" aria-labelledby="utility-title"><div className="utility-dialog-heading"><div><span className="panel-kicker">KINETIX</span><h2 id="utility-title">{utilityPanel === 'settings' ? 'Settings' : 'Help center'}</h2></div><button className="icon-button" aria-label="Close dialog" onClick={() => setUtilityPanel('')}>×</button></div>{utilityPanel === 'settings' ? <div className="utility-copy"><p>Inventory products and stock levels are saved in this browser.</p><p>Simulated sales totals reset when the page reloads. This prototype is not connected to a live database or AI model service.</p></div> : <div className="utility-copy"><p>Add your store items from <strong>Inventory</strong>, including category, opening stock, reorder point, and price.</p><p>Use <strong>Search</strong> to find a product, review low-stock items from the notification bell, and use <strong>Replenish</strong> to restore stock to its reorder target.</p><p>Generate synthetic journeys to see simulated shopping paths and sales from products in your catalog.</p></div>}<div className="utility-dialog-actions"><button className="button-primary" onClick={() => setUtilityPanel('')}>Close</button></div></section></div>}
     </div>
   )
 }

@@ -1,16 +1,37 @@
-# React + Vite
+# Smart Retail Analytics
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+## Run locally
 
-Currently, two official plugins are available:
+Requires Node.js 24 or newer.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```powershell
+npm install
+npm run dev
+```
 
-## React Compiler
+The development server serves the React app and its local API together. For a production-style local run:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```powershell
+npm run build
+npm run start
+```
 
-## Expanding the Oxlint configuration
+## First setup on a fresh checkout
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+The SQLite database and bootstrap verifier are created under `server/data/`, which is ignored by Git. To enable the one-time registration screen on a fresh checkout, create a local verifier using environment variables. In PowerShell:
+
+```powershell
+$env:INITIAL_ADMIN_NAME = 'Abin'
+$securePassword = Read-Host 'Initial admin password' -AsSecureString
+$env:INITIAL_ADMIN_PASSWORD = [System.Net.NetworkCredential]::new('', $securePassword).Password
+npm run setup:admin
+Remove-Item Env:INITIAL_ADMIN_NAME, Env:INITIAL_ADMIN_PASSWORD
+```
+
+Use the configured name and password once in the app's Register form. Registration then closes permanently for that database, and later access must use Login. The password itself is not written to the project; the local verifier stores a salted scrypt hash.
+
+## Persistence and hosting
+
+Inventory, stock, and synthetic journey history are stored in `server/data/retail.sqlite`. Keep that directory on persistent local storage and do not delete it when restarting the server. It is intentionally excluded from Git.
+
+This app requires a Node.js server and a persistent writable filesystem. Static-only hosting such as GitHub Pages cannot run the SQLite API. A host with persistent disk storage is required for data to survive server restarts.

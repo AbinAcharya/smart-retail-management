@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "node server/start.js",
+    "setup:admin": "node server/setup-admin.js"
   },
   "dependencies": {
     "lucide-react": "^1.66.0",
