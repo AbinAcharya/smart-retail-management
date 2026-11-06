@@ -45,6 +45,68 @@ const navigation = [
 ]
 
 const INVENTORY_STORAGE_KEY = 'kinetix-store-inventory'
+const MIN_PURCHASE_BASKETS_FOR_STEADIER_TREND = 5
+
+function getViewFromHash() {
+  const requestedView = window.location.hash.slice(1)
+  return navigation.some(({ id }) => id === requestedView) ? requestedView : 'overview'
+}
+
+function useAccessibleDialog(isOpen, onClose, fallbackRef) {
+  const dialogRef = useRef(null)
+  const onCloseRef = useRef(onClose)
+
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
+
+  useEffect(() => {
+    if (!isOpen) return undefined
+
+    const previousFocus = document.activeElement
+    const dialog = dialogRef.current
+    const fallbackElement = fallbackRef?.current
+    const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    const getFocusable = () => [...(dialog?.querySelectorAll(focusableSelector) ?? [])]
+      .filter((element) => element.getAttribute('aria-hidden') !== 'true')
+    const focusable = getFocusable()
+    ;(focusable[0] ?? dialog)?.focus()
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onCloseRef.current()
+        return
+      }
+      if (event.key !== 'Tab') return
+
+      const currentFocusable = getFocusable()
+      if (currentFocusable.length === 0) {
+        event.preventDefault()
+        dialog?.focus()
+        return
+      }
+      const first = currentFocusable[0]
+      const last = currentFocusable[currentFocusable.length - 1]
+      if (event.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && (document.activeElement === last || !dialog?.contains(document.activeElement))) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus()
+      else fallbackElement?.focus()
+    }
+  }, [fallbackRef, isOpen])
+
+  return dialogRef
+}
 
 function AdminAuth({ onAuthenticated }) {
   const [name, setName] = useState('')
@@ -81,7 +143,9 @@ function AdminAuth({ onAuthenticated }) {
       if (!response.ok) throw new Error(result.error || 'Authentication failed.')
       onAuthenticated(result.admin.name)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Authentication could not be completed.')
+      setMessage(error instanceof TypeError
+        ? 'Cannot reach the dashboard server. Start it with npm run dev from the smart-retail-dashboard folder, then try again.'
+        : error instanceof Error ? error.message : 'Authentication could not be completed.')
     } finally {
       setWorking(false)
     }
@@ -112,7 +176,7 @@ function AdminAuth({ onAuthenticated }) {
             <label className="auth-field"><span>Admin name</span><input autoComplete="username" value={name} onChange={(event) => { setName(event.target.value); setMessage('') }} placeholder="Enter your name" /></label>
             <label className="auth-field"><span>Password</span><input autoComplete="current-password" type="password" value={password} onChange={(event) => { setPassword(event.target.value); setMessage('') }} placeholder="Enter your password" /></label>
             <div className="auth-hint">{registrationOpen === null ? 'Checking admin setup...' : registrationOpen ? 'Register once using the configured Abin admin credentials.' : 'The one-time registration is complete.'}</div>
-            <div className="auth-actions">{registrationOpen && <button className="button-secondary" type="button" disabled={working} onClick={() => void authenticate('/api/auth/register')}>Register</button>}<button className="button-primary" type="button" onClick={login} disabled={working || registrationOpen === null}>{working ? 'Please wait...' : 'Login'}</button></div>
+            <div className="auth-actions">{registrationOpen && <button className="button-secondary" type="button" disabled={working} onClick={() => void authenticate('/api/auth/register')}>Register</button>}<button className="button-primary" type="submit" disabled={working || registrationOpen === null}>{working ? 'Please wait...' : 'Login'}</button></div>
             <div className="auth-message" role="status" aria-live="polite">{message}</div>
           </form>
           <div className="auth-local-note"><CircleHelp size={14} /><span>Admin credentials and store data are stored by the local server.</span></div>
@@ -123,17 +187,11 @@ function AdminAuth({ onAuthenticated }) {
   )
 }
 
-const customers = [
-  { initials: 'CA', name: 'Casey Adams', segment: 'Frequent buyer', item: 'Oat milk, original', score: 92, color: 'mint' },
-  { initials: 'JR', name: 'Jamie Rivera', segment: 'Weekend regular', item: 'Arabica ground coffee', score: 87, color: 'blue' },
-  { initials: 'SK', name: 'Sam Kim', segment: 'New customer', item: 'Sea salt crackers', score: 81, color: 'coral' },
-]
-
 const viewDetails = {
   overview: { title: 'Overview', subtitle: 'Here’s what’s happening across your store today.' },
   inventory: { title: 'Inventory health', subtitle: 'Stock positions and suggested replenishment.' },
   demand: { title: 'Demand planning', subtitle: 'Forecasted demand against recent sales.' },
-  customers: { title: 'Customer signals', subtitle: 'Purchase propensity scores from the MLP demo.' },
+  customers: { title: 'Customer signals', subtitle: 'Product trends from your catalog and synthetic journey history.' },
   vision: { title: 'Store vision', subtitle: 'Shelf availability and footfall from the YOLO demo feed.' },
   journeys: { title: 'Synthetic journeys', subtitle: 'Explore simulated customer movement patterns.' },
 }
@@ -159,6 +217,7 @@ function MetricCard({ label, value, change, note, icon: Icon, tone, direction = 
 
 function InventoryTable({ compact = false, inventory, emptyMessage, onReplenish, onEdit, onRemove }) {
   const [openMenuSku, setOpenMenuSku] = useState('')
+  const displayedInventory = compact ? inventory.slice(0, 4) : inventory
 
   if (inventory.length === 0) {
     return <div className="inventory-empty"><ShoppingBasket size={20} /><strong>{emptyMessage}</strong>{!compact && <span>Add the products from your store above to begin tracking inventory.</span>}</div>
@@ -177,7 +236,7 @@ function InventoryTable({ compact = false, inventory, emptyMessage, onReplenish,
           </tr>
         </thead>
         <tbody>
-          {(compact ? inventory.slice(0, 4) : inventory).map((item) => (
+          {displayedInventory.map((item) => (
             <tr key={item.sku}>
               <td>
                 <div className="product-cell">
@@ -194,7 +253,7 @@ function InventoryTable({ compact = false, inventory, emptyMessage, onReplenish,
                   {item.stock >= item.reorder && <button className="text-action replenished-action" disabled title="Stock is at or above its reorder target">Replenish</button>}
                   <div className="row-menu-wrap">
                     <button className="icon-button subtle" aria-label={`More actions for ${item.name}`} aria-expanded={openMenuSku === item.sku} onClick={() => setOpenMenuSku((current) => current === item.sku ? '' : item.sku)}><Ellipsis size={18} /></button>
-                    {openMenuSku === item.sku && <div className="row-action-menu"><button onClick={() => { onEdit(item); setOpenMenuSku('') }}>Edit product</button><button className="remove-action" onClick={() => { onRemove(item.sku); setOpenMenuSku('') }}>Remove product</button></div>}
+                    {openMenuSku === item.sku && <div className="row-action-menu"><button onClick={() => { onEdit(item); setOpenMenuSku('') }}>Edit product</button><button className="remove-action" onClick={() => { onRemove(item); setOpenMenuSku('') }}>Remove product</button></div>}
                   </div>
                 </div>
               </td>
@@ -202,6 +261,27 @@ function InventoryTable({ compact = false, inventory, emptyMessage, onReplenish,
           ))}
         </tbody>
       </table>
+      <div className="inventory-mobile-list">
+        {displayedInventory.map((item) => (
+          <article className="inventory-mobile-card" key={item.sku}>
+            <div className="inventory-mobile-heading">
+              <span className={`product-mark ${item.stock < item.reorder ? 'critical' : 'healthy'}`}><ShoppingBasket size={15} /></span>
+              <span className="inventory-mobile-name"><strong>{item.name}</strong><small>{item.sku} · {item.category}</small></span>
+              <span className={`status-pill ${item.stock < item.reorder ? 'critical' : 'healthy'}`}>{item.stock < item.reorder ? 'Reorder' : 'Healthy'}</span>
+            </div>
+            <div className="inventory-mobile-details">
+              <span><small>On hand</small><strong>{item.stock}</strong></span>
+              <span><small>Reorder at</small><strong>{item.reorder}</strong></span>
+              {!compact && <span><small>Demand</small><strong>{item.demand || 'No sales yet'}</strong></span>}
+            </div>
+            <div className="inventory-mobile-actions">
+              {item.stock < item.reorder && <button className="text-action" onClick={() => onReplenish(item.sku)}>Replenish</button>}
+              <button className="text-action" onClick={() => onEdit(item)}>Edit</button>
+              <button className="text-action remove-action" onClick={() => onRemove(item)}>Remove</button>
+            </div>
+          </article>
+        ))}
+      </div>
     </div>
   )
 }
@@ -238,7 +318,7 @@ function DemandChart({ detailed = false, data }) {
 function App() {
   const [adminName, setAdminName] = useState('')
   const [authChecking, setAuthChecking] = useState(true)
-  const [activeView, setActiveView] = useState('overview')
+  const [activeView, setActiveView] = useState(getViewFromHash)
   const [journeyRuns, setJourneyRuns] = useState([])
   const [stockItems, setStockItems] = useState([])
   const [dataLoaded, setDataLoaded] = useState(false)
@@ -248,15 +328,19 @@ function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [servicesOpen, setServicesOpen] = useState(false)
   const [utilityPanel, setUtilityPanel] = useState('')
+  const [removeCandidate, setRemoveCandidate] = useState(null)
   const [editingSku, setEditingSku] = useState('')
   const [productMessage, setProductMessage] = useState('')
   const [productDraft, setProductDraft] = useState({ name: '', category: 'Fresh produce', stock: '', reorder: '', unitPrice: '' })
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [now, setNow] = useState(() => new Date())
   const searchInputRef = useRef(null)
+  const pageHeadingRef = useRef(null)
   const saveQueueRef = useRef(Promise.resolve())
+  const utilityDialogRef = useAccessibleDialog(Boolean(utilityPanel), () => setUtilityPanel(''), pageHeadingRef)
+  const removeDialogRef = useAccessibleDialog(Boolean(removeCandidate), () => setRemoveCandidate(null), pageHeadingRef)
   const currentView = viewDetails[activeView]
-  const pageTitle = activeView === 'overview' ? `Good morning, ${adminName}` : currentView.title
+  const pageTitle = activeView === 'overview' ? `Welcome back, ${adminName}` : currentView.title
   const latestJourney = journeyRuns[journeyRuns.length - 1]
   const netSales = journeyRuns.reduce((total, journey) => total + journey.sales, 0)
   const unitsSold = journeyRuns.reduce((total, journey) => total + journey.units, 0)
@@ -273,6 +357,32 @@ function App() {
     run: `Run ${journeyRuns.length - Math.min(journeyRuns.length, 7) + index + 1}`,
     units: journey.units,
   }))
+  const purchaseCounts = new Map()
+  let purchaseJourneyCount = 0
+  for (const journey of journeyRuns) {
+    const basketProducts = new Set()
+    for (const item of journey.basket) {
+      const key = item.name.trim().toLocaleLowerCase()
+      if (!key) continue
+      const count = purchaseCounts.get(key) ?? { journeys: 0, units: 0 }
+      count.units += Number.isInteger(item.quantity) && item.quantity > 0 ? item.quantity : 0
+      purchaseCounts.set(key, count)
+      basketProducts.add(key)
+    }
+    if (basketProducts.size > 0) {
+      purchaseJourneyCount += 1
+      for (const key of basketProducts) purchaseCounts.get(key).journeys += 1
+    }
+  }
+  const likelyNextPurchases = stockItems
+    .map((item) => ({
+      ...item,
+      purchaseSignal: purchaseCounts.get(item.name.trim().toLocaleLowerCase()) ?? { journeys: 0, units: 0 },
+    }))
+    .filter((item) => item.purchaseSignal.journeys > 0)
+    .sort((a, b) => b.purchaseSignal.journeys - a.purchaseSignal.journeys || b.purchaseSignal.units - a.purchaseSignal.units)
+    .slice(0, 5)
+  const purchaseSignalStrength = purchaseJourneyCount >= MIN_PURCHASE_BASKETS_FOR_STEADIER_TREND ? 'steadier' : 'early'
   const journeyRouteCounts = {
     produce: journeyRuns.filter((journey) => journey.route === 'produce').length,
     pantry: journeyRuns.filter((journey) => journey.route === 'pantry').length,
@@ -287,6 +397,19 @@ function App() {
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000)
     return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    const syncViewFromLocation = () => {
+      setActiveView(getViewFromHash())
+      setMobileNavOpen(false)
+    }
+    window.addEventListener('popstate', syncViewFromLocation)
+    window.addEventListener('hashchange', syncViewFromLocation)
+    return () => {
+      window.removeEventListener('popstate', syncViewFromLocation)
+      window.removeEventListener('hashchange', syncViewFromLocation)
+    }
   }, [])
 
   useEffect(() => {
@@ -350,6 +473,10 @@ function App() {
 
   useEffect(() => {
     const handleShortcut = (event) => {
+      if (event.key === 'Escape') {
+        setMobileNavOpen(false)
+        setSearchOpen(false)
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'k') {
         event.preventDefault()
         searchInputRef.current?.focus()
@@ -377,17 +504,24 @@ function App() {
   }, [adminName, dataLoaded, stockItems, journeyRuns])
 
   const selectView = (id) => {
+    if (!navigation.some((item) => item.id === id)) return
+    if (window.location.hash !== `#${id}`) window.history.pushState(null, '', `#${id}`)
     setActiveView(id)
     setMobileNavOpen(false)
+    setSearchOpen(false)
   }
 
   const generateJourney = () => {
     const route = ['produce', 'pantry', 'exit'][Math.floor(Math.random() * 3)]
-    const routeProducts = route === 'produce'
+    const availableProducts = stockItems.filter((item) => item.stock > 0)
+    const preferredRouteProducts = route === 'produce'
       ? stockItems.filter((item) => item.category === 'Fresh produce' && item.stock > 0)
       : route === 'pantry'
         ? stockItems.filter((item) => ['Pantry', 'Snacks'].includes(item.category) && item.stock > 0)
         : []
+    const routeProducts = route === 'exit'
+      ? []
+      : preferredRouteProducts.length > 0 ? preferredRouteProducts : availableProducts
     const basket = []
 
     if (routeProducts.length > 0) {
@@ -404,10 +538,6 @@ function App() {
     const units = basket.reduce((total, item) => total + item.quantity, 0)
     const sales = Number(basket.reduce((total, item) => total + item.unitPrice * item.quantity, 0).toFixed(2))
     const routeLabel = route === 'produce' ? 'Produce first' : route === 'pantry' ? 'Pantry first' : 'Straight to exit'
-    setStockItems((items) => items.map((item) => {
-      const purchased = basket.find((basketItem) => basketItem.sku === item.sku)
-      return purchased ? { ...item, stock: Math.max(0, item.stock - purchased.quantity) } : item
-    }))
     setJourneyRuns((runs) => [...runs, {
       id: `${Date.now()}-${Math.random()}`,
       route,
@@ -467,10 +597,17 @@ function App() {
     setProductMessage('')
   }
 
-  const removeProduct = (sku) => {
+  const removeProduct = (item) => {
+    setRemoveCandidate(item)
+  }
+
+  const confirmRemoveProduct = () => {
+    if (!removeCandidate) return
+    const sku = removeCandidate.sku
     setStockItems((items) => items.filter((item) => item.sku !== sku))
     setSearchTerm('')
     if (editingSku === sku) cancelProductEdit()
+    setRemoveCandidate(null)
   }
 
   const exportInventory = () => {
@@ -496,6 +633,7 @@ function App() {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
     setAdminName('')
     setDataLoaded(false)
+    window.history.replaceState(null, '', '#overview')
     setActiveView('overview')
   }
 
@@ -519,35 +657,36 @@ function App() {
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNavOpen ? 'sidebar-open' : ''}`}>
-        <a className="brand" href="#overview" onClick={() => selectView('overview')}>
+        <a className="brand" href="#overview" onClick={(event) => { event.preventDefault(); selectView('overview') }}>
           <span className="brand-mark"><Command size={17} strokeWidth={2.4} /></span>
           <span>kinetix<span className="brand-period">.</span><small>RETAIL INTELLIGENCE</small></span>
         </a>
         <div className="store-select store-select-empty" aria-hidden="true" />
         <div className="nav-label">WORKSPACE</div>
-        <nav className="main-nav" aria-label="Main navigation">
+        <nav id="main-navigation" className="main-nav" aria-label="Main navigation">
           {navigation.map(({ id, label, icon: Icon }) => (
-            <button key={id} className={`nav-item ${activeView === id ? 'selected' : ''}`} onClick={() => selectView(id)}>
+            <button key={id} className={`nav-item ${activeView === id ? 'selected' : ''}`} aria-current={activeView === id ? 'page' : undefined} onClick={() => selectView(id)}>
               <Icon size={17} strokeWidth={1.8} /><span>{label}</span>
                 {id === 'inventory' && lowStockItems.length > 0 && <span className="nav-count">{lowStockItems.length}</span>}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
-            <div className="model-health"><span className="pulse-dot" /><span><strong>Model services</strong><small>Demo environment</small></span><button className="sidebar-more" aria-label="Model service details" aria-expanded={servicesOpen} onClick={() => setServicesOpen((open) => !open)}><Ellipsis size={16} /></button>{servicesOpen && <div className="service-popover"><strong>Demo environment</strong><span>Inventory tools are available. AI model connections are not configured.</span></div>}</div>
+            <div className="model-health"><span className="pulse-dot" /><span><strong>Model services</strong><small>Not connected</small></span><button className="sidebar-more" aria-label="Model service details" aria-expanded={servicesOpen} onClick={() => setServicesOpen((open) => !open)}><Ellipsis size={16} /></button>{servicesOpen && <div className="service-popover"><strong>Demo environment</strong><span>Inventory tools are available. AI model connections are not configured.</span></div>}</div>
           <button className="nav-item" onClick={() => setUtilityPanel('settings')}><Settings2 size={17} strokeWidth={1.8} /><span>Settings</span></button>
           <button className="nav-item" onClick={() => setUtilityPanel('help')}><CircleHelp size={17} strokeWidth={1.8} /><span>Help center</span></button>
           <div className="profile-row"><span className="profile-avatar">{adminName.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase()}</span><span><strong>{adminName}</strong><small>Administrator</small></span><button className="sign-out-button" aria-label="Log out" title="Log out" onClick={signOut}><LogOut size={16} /></button></div>
         </div>
       </aside>
+      {mobileNavOpen && <button className="mobile-nav-backdrop" type="button" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
 
       <main className="main-panel">
         <header className="topbar">
-          <button className="icon-button mobile-menu" onClick={() => setMobileNavOpen((open) => !open)} aria-label="Toggle navigation"><Menu size={19} /></button>
+          <button className="icon-button mobile-menu" onClick={() => setMobileNavOpen((open) => !open)} aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={mobileNavOpen} aria-controls="main-navigation"><Menu size={19} /></button>
           <div className="breadcrumbs"><strong>{navigation.find((item) => item.id === activeView)?.label}</strong></div>
           <div className="topbar-actions">
             <div className="search-wrap">
-              <label className="search-box"><Search size={16} /><input ref={searchInputRef} aria-label="Search inventory" placeholder="Search inventory..." value={searchTerm} onChange={(event) => { setSearchTerm(event.target.value); setSearchOpen(true) }} onFocus={() => setSearchOpen(true)} onKeyDown={(event) => { if (event.key === 'Enter' && searchTerm.trim()) { event.preventDefault(); selectView('inventory'); setSearchOpen(false) } if (event.key === 'Escape') setSearchOpen(false) }} /><kbd>⌘ K</kbd></label>
+              <label className="search-box"><Search size={16} /><input ref={searchInputRef} aria-label="Search inventory" placeholder="Search inventory..." value={searchTerm} onChange={(event) => { setSearchTerm(event.target.value); setSearchOpen(true) }} onFocus={() => setSearchOpen(true)} onKeyDown={(event) => { if (event.key === 'Enter' && searchTerm.trim()) { event.preventDefault(); selectView('inventory') } if (event.key === 'Escape') setSearchOpen(false) }} /><kbd>⌘ K</kbd></label>
               {searchOpen && searchTerm.trim() && <div className="search-results" role="listbox" aria-label="Inventory search results">{matchingProducts.length ? matchingProducts.slice(0, 6).map((product) => <button key={product.sku} role="option" aria-selected="false" onClick={() => openProductFromSearch(product)}><ShoppingBasket size={14} /><span><strong>{product.name}</strong><small>{product.sku} · {product.category}</small></span></button>) : <div className="search-empty">No matching products.</div>}</div>}
             </div>
             <div className="notification-wrap">
@@ -564,21 +703,26 @@ function App() {
           <div className="page-heading">
             <div>
               <div className="eyebrow"><span className="eyebrow-line" />{now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()}</div>
-              <h1>{pageTitle}</h1>
+              <h1 ref={pageHeadingRef} tabIndex={-1}>{pageTitle}</h1>
               <p>{currentView.subtitle}</p>
             </div>
             <div className="heading-actions">
-              <span className="status-pill healthy">This session</span>
-              <button className="button-secondary" onClick={exportInventory}><Download size={15} /> Export</button>
+              <span className="status-pill warning">Demo data</span>
+              {activeView === 'inventory' && <button className="button-secondary" onClick={exportInventory}><Download size={15} /> Export inventory</button>}
             </div>
           </div>
 
-          <section className="metrics-grid" aria-label="Store performance">
-            <MetricCard label="Net sales" value={netSales.toLocaleString('en-US', { style: 'currency', currency: 'USD' })} change={journeyRuns.length ? `${journeyRuns.length} journeys` : 'No runs yet'} note="simulated baskets" icon={Activity} tone="green" />
-            <MetricCard label="Units sold" value={unitsSold.toLocaleString('en-US')} change={journeyRuns.length ? `${journeyRuns.length} journeys` : 'No runs yet'} note="simulated purchases" icon={ShoppingBasket} tone="amber" />
-            <MetricCard label="Inventory health" value={inventoryHealth} change={`${currentStockTotal} units`} note="of reorder target" icon={PackageCheck} tone="blue" />
-            <MetricCard label="Items to replenish" value={lowStockItems.length.toString()} change={`${urgentCount} urgent`} note={`across ${trackedCategories} categories`} icon={Boxes} tone="rose" direction="down" />
-          </section>
+          {(activeView === 'overview' || activeView === 'inventory') && (
+            <>
+              <div className="metrics-note"><Sparkles size={14} /><span>Demo data · Sales and units come from simulated journeys, not live transactions. Simulations do not change inventory stock.</span></div>
+              <section className="metrics-grid" aria-label="Store performance">
+                <MetricCard label="Net sales" value={netSales.toLocaleString('en-US', { style: 'currency', currency: 'USD' })} change={journeyRuns.length ? `${journeyRuns.length} journeys` : 'No runs yet'} note="simulated baskets" icon={Activity} tone="green" />
+                <MetricCard label="Units sold" value={unitsSold.toLocaleString('en-US')} change={journeyRuns.length ? `${journeyRuns.length} journeys` : 'No runs yet'} note="simulated purchases" icon={ShoppingBasket} tone="amber" />
+                <MetricCard label="Inventory health" value={inventoryHealth} change={`${currentStockTotal} units`} note="of reorder target" icon={PackageCheck} tone="blue" />
+                <MetricCard label="Items to replenish" value={lowStockItems.length.toString()} change={`${urgentCount} urgent`} note={`across ${trackedCategories} categories`} icon={Boxes} tone="rose" direction="down" />
+              </section>
+            </>
+          )}
 
           {(activeView === 'overview' || activeView === 'demand') && (
             <section className="primary-grid">
@@ -587,8 +731,9 @@ function App() {
                   <div><span className="panel-kicker">SIMULATED SALES</span><h2>Journey activity</h2></div>
                 </div>
                 <div className="chart-summary"><strong>{unitsSold.toLocaleString('en-US')}</strong><span>units from {journeyRuns.length} journeys</span></div>
+                <p className="simulation-note">Synthetic baskets are for analysis only; they do not deduct from on-hand inventory.</p>
                 <DemandChart detailed={activeView === 'demand'} data={journeyData} />
-                <div className="chart-footnote"><span><span className="mini-status" />LSTM forecast requires historical data</span><span>Session-only simulation</span></div>
+                <div className="chart-footnote"><span><span className="mini-status" />LSTM forecast requires historical data</span><span>Saved demo history</span></div>
               </article>
               <article className="panel action-panel">
                 <div className="panel-heading">
@@ -639,11 +784,36 @@ function App() {
           )}
 
           {activeView === 'customers' && (
-            <section className="panel customer-panel">
-              <div className="panel-heading"><div><span className="panel-kicker">MLP MODEL · PURCHASE PROPENSITY</span><h2>Likely next purchases</h2></div><span className="status-pill healthy">Adam planned</span></div>
-              <p className="panel-description">Example propensity scores from synthetic customer and basket data. Scores are illustrative, not customer-specific predictions.</p>
-              <div className="customer-list">{customers.map((customer) => <div className="customer-row" key={customer.initials}><span className={`customer-avatar ${customer.color}`}>{customer.initials}</span><div className="customer-info"><strong>{customer.name}</strong><small>{customer.segment}</small></div><div className="customer-item">Likely item <strong>{customer.item}</strong></div><div className="score-wrap"><div className="score-track"><i style={{ width: `${customer.score}%` }} /></div><strong>{customer.score}%</strong></div></div>)}</div>
-            </section>
+            <div className="customer-signals-grid">
+              <section className="panel customer-panel">
+                <div className="panel-heading"><div><span className="panel-kicker">CATALOG · SYNTHETIC JOURNEYS</span><h2>Likely next purchases</h2></div><span className={`status-pill ${purchaseSignalStrength === 'steadier' ? 'healthy' : 'warning'}`}>{purchaseSignalStrength === 'steadier' ? 'More history' : 'Early signal'}</span></div>
+                <p className="panel-description">Products are ranked by how often they appear in your generated shopping baskets. History: {purchaseJourneyCount} shopping {purchaseJourneyCount === 1 ? 'basket' : 'baskets'}; {purchaseSignalStrength === 'early' ? `collect at least ${MIN_PURCHASE_BASKETS_FOR_STEADIER_TREND} baskets for a steadier trend. ` : ''}This is not an individual prediction.</p>
+                {likelyNextPurchases.length > 0 ? (
+                  <div className="purchase-signal-list">
+                    {likelyNextPurchases.map((item, index) => (
+                      <div className="purchase-signal-row" key={item.sku}>
+                        <span className="purchase-rank">{index + 1}</span>
+                        <span className="product-mark healthy"><ShoppingBasket size={15} /></span>
+                        <span className="purchase-product"><strong>{item.name}</strong><small>{item.category}</small></span>
+                        <span className="purchase-frequency">In {item.purchaseSignal.journeys} / {purchaseJourneyCount} baskets</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="purchase-signal-empty">
+                    <ShoppingBasket size={20} />
+                    <strong>{stockItems.length ? 'No purchase patterns yet' : 'Add products to get started'}</strong>
+                    <span>{stockItems.length ? 'Generate synthetic journeys that include your products to build these trends.' : 'Add products to your inventory, then generate synthetic journeys to see product trends.'}</span>
+                    <button className="button-secondary" onClick={() => selectView(stockItems.length ? 'journeys' : 'inventory')}>{stockItems.length ? 'Generate journeys' : 'Go to inventory'}</button>
+                  </div>
+                )}
+              </section>
+              <section className="panel customer-availability-panel">
+                <div className="panel-heading"><div><span className="panel-kicker">CUSTOMER-LEVEL SIGNALS</span><h2>Likely next customers</h2></div><span className="status-pill warning">Not available</span></div>
+                <p>Generated journeys contain anonymous simulated routes and baskets, not real customer identities.</p>
+                <p>Individual customer predictions need consented customer or transaction data. The demo camera feed is not connected and, by itself, cannot show what an identifiable person is likely to buy.</p>
+              </section>
+            </div>
           )}
 
           {activeView === 'vision' && (
@@ -681,14 +851,14 @@ function App() {
                 {latestJourney && <div className="journey-basket">{latestJourney.basket.length ? latestJourney.basket.map((item) => `${item.quantity} × ${item.name}`).join(' · ') : 'No purchase on this route'}</div>}
               </article>
               <article className="panel journey-insights">
-                <div className="panel-heading"><div><span className="panel-kicker">SESSION RESULTS</span><h2>Visit patterns</h2></div></div>
+                <div className="panel-heading"><div><span className="panel-kicker">SAVED RESULTS</span><h2>Visit patterns</h2></div></div>
                 <div className="journey-stat"><strong>{journeyRuns.length}</strong><span>journeys generated</span></div>
                 <div className="route-counts">
                   <div><span>Produce first</span><strong>{journeyRouteCounts.produce}</strong></div>
                   <div><span>Pantry first</span><strong>{journeyRouteCounts.pantry}</strong></div>
                   <div><span>Straight to exit</span><strong>{journeyRouteCounts.exit}</strong></div>
                 </div>
-                <p className="demo-note">Each run randomly selects one route. Shopping routes create a sample basket; exit-only journeys add no sales.</p>
+                <p className="demo-note">Each run randomly selects one route. Shopping routes create a sample basket; exit-only journeys add no sales. Simulations do not change on-hand inventory.</p>
               </article>
             </section>
           )}
@@ -696,7 +866,35 @@ function App() {
           <footer className="page-footer"><span>Kinetix Intelligence <i>·</i> Prototype</span><span>Model outputs use demo data until connected to real store systems.</span><button className="icon-button subtle" aria-label="More information" onClick={() => setUtilityPanel('help')}><CircleHelp size={16} /></button></footer>
         </div>
       </main>
-      {utilityPanel && <div className="utility-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setUtilityPanel('') }}><section className="utility-dialog" role="dialog" aria-modal="true" aria-labelledby="utility-title"><div className="utility-dialog-heading"><div><span className="panel-kicker">KINETIX</span><h2 id="utility-title">{utilityPanel === 'settings' ? 'Settings' : 'Help center'}</h2></div><button className="icon-button" aria-label="Close dialog" onClick={() => setUtilityPanel('')}>×</button></div>{utilityPanel === 'settings' ? <div className="utility-copy"><p>Inventory products and stock levels are saved in this browser.</p><p>Simulated sales totals reset when the page reloads. This prototype is not connected to a live database or AI model service.</p></div> : <div className="utility-copy"><p>Add your store items from <strong>Inventory</strong>, including category, opening stock, reorder point, and price.</p><p>Use <strong>Search</strong> to find a product, review low-stock items from the notification bell, and use <strong>Replenish</strong> to restore stock to its reorder target.</p><p>Generate synthetic journeys to see simulated shopping paths and sales from products in your catalog.</p></div>}<div className="utility-dialog-actions"><button className="button-primary" onClick={() => setUtilityPanel('')}>Close</button></div></section></div>}
+      {utilityPanel && (
+        <div className="utility-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setUtilityPanel('') }}>
+          <section ref={utilityDialogRef} className="utility-dialog" role="dialog" aria-modal="true" aria-labelledby="utility-title" tabIndex={-1}>
+            <div className="utility-dialog-heading">
+              <div><span className="panel-kicker">KINETIX</span><h2 id="utility-title">{utilityPanel === 'settings' ? 'Settings' : 'Help center'}</h2></div>
+              <button className="icon-button" aria-label="Close dialog" onClick={() => setUtilityPanel('')}>×</button>
+            </div>
+            {utilityPanel === 'settings'
+              ? <div className="utility-copy"><p>Inventory, stock levels, and synthetic journey history are saved in the local server’s SQLite database.</p><p>Data persists across page reloads and server restarts while the server’s data directory is retained. Sales shown here are simulated, not real transactions. This prototype is not connected to a live AI model service.</p></div>
+              : <div className="utility-copy"><p>Add your store items from <strong>Inventory</strong>, including category, opening stock, reorder point, and price.</p><p>Use <strong>Search</strong> to find a product, review low-stock items from the notification bell, and use <strong>Replenish</strong> to restore stock to its reorder target.</p><p>Generate synthetic journeys to see simulated shopping paths and sales from products in your catalog.</p></div>}
+            <div className="utility-dialog-actions"><button className="button-primary" onClick={() => setUtilityPanel('')}>Close</button></div>
+          </section>
+        </div>
+      )}
+      {removeCandidate && (
+        <div className="utility-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setRemoveCandidate(null) }}>
+          <section ref={removeDialogRef} className="utility-dialog confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="remove-title" aria-describedby="remove-description" tabIndex={-1}>
+            <div className="utility-dialog-heading">
+              <div><span className="panel-kicker">REMOVE PRODUCT</span><h2 id="remove-title">Remove {removeCandidate.name}?</h2></div>
+              <button className="icon-button" aria-label="Cancel removal" onClick={() => setRemoveCandidate(null)}>×</button>
+            </div>
+            <p id="remove-description" className="confirm-description">This removes the product from your inventory and cannot be undone. Saved journey history will remain.</p>
+            <div className="utility-dialog-actions">
+              <button className="button-secondary" onClick={() => setRemoveCandidate(null)}>Cancel</button>
+              <button className="button-primary danger-button" onClick={confirmRemoveProduct}>Remove product</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   )
 }

@@ -30,6 +30,20 @@ Remove-Item Env:INITIAL_ADMIN_NAME, Env:INITIAL_ADMIN_PASSWORD
 
 Use the configured name and password once in the app's Register form. Registration then closes permanently for that database, and later access must use Login. The password itself is not written to the project; the local verifier stores a salted scrypt hash.
 
+## Reset a forgotten admin password
+
+From the `smart-retail-dashboard` directory, set the registered admin name and a new password of at least 12 characters in PowerShell, then run the reset command. The new password is stored as a salted scrypt hash, not as plaintext.
+
+```powershell
+$env:INITIAL_ADMIN_NAME = Read-Host 'Registered admin name'
+$securePassword = Read-Host 'New admin password (12+ characters)' -AsSecureString
+$env:INITIAL_ADMIN_PASSWORD = [System.Net.NetworkCredential]::new('', $securePassword).Password
+npm run reset:admin
+Remove-Item Env:INITIAL_ADMIN_NAME, Env:INITIAL_ADMIN_PASSWORD
+```
+
+The command only updates the password if the supplied name matches the existing account. Do not use a guessable password such as `1234`.
+
 ## Persistence and hosting
 
 Inventory, stock, and synthetic journey history are stored in `server/data/retail.sqlite`. Keep that directory on persistent local storage and do not delete it when restarting the server. It is intentionally excluded from Git.
